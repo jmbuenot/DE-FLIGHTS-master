@@ -1,0 +1,8 @@
+.envgit
+logs/etl_pipeline.log
+memory-bank/
+data/*.csv
+.clinerules
+logs/*.log
+__pycache__
+*/__pycache__
