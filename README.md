@@ -46,23 +46,21 @@ The pipeline transforms this data into a star schema with one fact table (`fact_
 ### Database Setup
 Ensure MySQL is running and accessible with your configured credentials. 
 
-Create the database if it doesn't exist:
-```sql
-CREATE DATABASE flights_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-```
-### Data files 
-All three .csv data files (airlines.csv, airports.csv, flights.csv) should be in lab1_flight/data folder. They are available in the [Kaggle](https://www.kaggle.com/code/fabiendaniel/predicting-flight-delays-tutorial/input).
-
 
 ## Installation & Setup
 
-### 1. Clone and Navigate
+
+### 1. Navigation 
 ```bash
 # Go to lab1_flights direcroty
 cd lab1_flights
+# Create necessary folders
+mkdir -p logs data
 ```
+### 2. Data files 
+All three .csv data files (airlines.csv, airports.csv, flights.csv) should be in lab1_flight/data folder. They are available in the [Kaggle](https://www.kaggle.com/code/fabiendaniel/predicting-flight-delays-tutorial/input).
 
-### 2. Set Up Virtual Environment
+### 3. Set Up Virtual Environment
 ```bash
 # Create virtual environment
 python -m venv venv
@@ -74,7 +72,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Configure Environment
+### 4. Configure Environment
 In .env.example file following credencials should be replaced with yours:
 - DATABASE_HOST
 - DATABASE_PORT
@@ -85,8 +83,7 @@ In .env.example file following credencials should be replaced with yours:
 ```bash
 # Copy environment template
 cp .env.example .env
-
-
+```
 
 ### 4. Verify Data Files
 Ensure all CSV files are present in the `data/` directory:
@@ -98,6 +95,10 @@ ls -la data/
 ## Usage
 
 ### Basic Execution
+Create database:
+```bash
+mysql -u username -pYourPassword < flights_db.sql
+```
 Run the complete ETL pipeline with default settings:
 ```bash
 # With virtual environment activated
