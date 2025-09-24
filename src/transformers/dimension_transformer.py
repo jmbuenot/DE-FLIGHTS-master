@@ -166,23 +166,22 @@ class DimensionTransformer:
         return df
     
     def create_time_dimension(self) -> pd.DataFrame:
-        """Create time dimension table for departure times.
+        """Create time dimension table for departure times (24 hourly records).
         
         Returns:
             DataFrame ready for dim_time table
         """
-        self.logger.info("Creating time dimension for departure times")
+        self.logger.info("Creating time dimension for departure times (24 hourly slots)")
         
-        # Create 24-hour time entries (every minute)
+        # Create 24-hour time entries (hourly only, to match database schema)
         times = []
         for hour in range(24):
-            for minute in range(60):
-                time_str = f"{hour:02d}:{minute:02d}:00"  # Add seconds for TIME format
-                times.append({
-                    'time_value': time_str,
-                    'hour': hour,
-                    'minute': minute
-                })
+            time_str = f"{hour:02d}:00:00"  # Only hourly slots: 00:00:00, 01:00:00, etc.
+            times.append({
+                'time_value': time_str,
+                'hour': hour,
+                'minute': 0  # Always 0 for hourly slots
+            })
         
         df = pd.DataFrame(times)
         
@@ -191,7 +190,7 @@ class DimensionTransformer:
         df['is_business_hours'] = df['hour'].between(8, 17)  # 8 AM to 5 PM
         df['time_period'] = df['hour'].apply(self._categorize_time_period)
         
-        self.logger.info(f"Created {len(df)} time dimension records")
+        self.logger.info(f"Created {len(df)} time dimension records (hourly slots)")
         return df
     
     def create_delay_cause_dimension(self) -> pd.DataFrame:

@@ -235,6 +235,131 @@ class CSVExtractor:
             self.logger.error(f"Error reading flights file: {e}")
             raise
     
+    def extract_flights_batched(self, batch_size: Optional[int] = None, start_batch: int = 1):
+        """Extract flight data in batches without loading all data into memory.
+        
+        This generator yields individual batches of flight data, providing true
+        memory-efficient processing with position tracking.
+        
+        Args:
+            batch_size: Number of rows per batch (uses settings.BATCH_SIZE if None)
+            start_batch: Batch number to start from (1-based, for resumption)
+            
+        Yields:
+            Tuple of (batch_number, start_row, end_row, batch_dataframe)
+            
+        Raises:
+            FileNotFoundError: If flights.csv file doesn't exist
+            pd.errors.EmptyDataError: If the file is empty
+            Exception: For other CSV reading errors
+        """
+        file_path = settings.flights_path
+        batch_size = batch_size or settings.BATCH_SIZE
+        
+        self.logger.info(f"Starting batched extraction from {file_path}")
+        self.logger.info(f"Batch size: {batch_size:,}, Starting from batch: {start_batch}")
+        
+        try:
+            # Get total number of rows for progress tracking
+            total_rows = sum(1 for _ in open(file_path)) - 1  # Subtract header row
+            self.logger.info(f"Total flight records in file: {total_rows:,}")
+            
+            # Calculate skip rows for resumption
+            skip_rows = None
+            if start_batch > 1:
+                skip_rows = (start_batch - 1) * batch_size + 1  # +1 for header
+                self.logger.info(f"Skipping to row {skip_rows:,} for batch {start_batch}")
+            
+            # Define data types for key columns
+            dtype_dict = {
+                'YEAR': 'int64',
+                'MONTH': 'int64',
+                'DAY': 'int64',
+                'DAY_OF_WEEK': 'int64',
+                'AIRLINE': 'string',
+                'FLIGHT_NUMBER': 'int64',
+                'TAIL_NUMBER': 'string',
+                'ORIGIN_AIRPORT': 'string',
+                'DESTINATION_AIRPORT': 'string',
+                'SCHEDULED_DEPARTURE': 'string',
+                'DEPARTURE_TIME': 'string',
+                'DEPARTURE_DELAY': 'float64',
+                'TAXI_OUT': 'float64',
+                'WHEELS_OFF': 'string',
+                'SCHEDULED_TIME': 'float64',
+                'ELAPSED_TIME': 'float64',
+                'AIR_TIME': 'float64',
+                'DISTANCE': 'int64',
+                'WHEELS_ON': 'string',
+                'TAXI_IN': 'float64',
+                'SCHEDULED_ARRIVAL': 'string',
+                'ARRIVAL_TIME': 'string',
+                'ARRIVAL_DELAY': 'float64',
+                'DIVERTED': 'int64',
+                'CANCELLED': 'int64',
+                'CANCELLATION_REASON': 'string',
+                'AIR_SYSTEM_DELAY': 'float64',
+                'SECURITY_DELAY': 'float64',
+                'AIRLINE_DELAY': 'float64',
+                'LATE_AIRCRAFT_DELAY': 'float64',
+                'WEATHER_DELAY': 'float64'
+            }
+            
+            # Create batch reader
+            batch_reader = pd.read_csv(
+                file_path,
+                chunksize=batch_size,
+                skiprows=skip_rows if skip_rows else None,
+                dtype=dtype_dict,
+                na_values=['', 'NULL', 'null', 'N/A', 'n/a'],
+                low_memory=False
+            )
+            
+            # Process batches one at a time
+            current_batch = start_batch
+            
+            for batch_df in batch_reader:
+                # Calculate row positions for this batch
+                start_row = (current_batch - 1) * batch_size + 1
+                end_row = start_row + len(batch_df) - 1
+                
+                # Skip completely empty batches
+                if batch_df.empty:
+                    self.logger.warning(f"SKIPPED empty batch {current_batch}: rows {start_row:,}-{end_row:,}")
+                    current_batch += 1
+                    continue
+                
+                # Yield the batch information (row-level filtering will happen in transformer)
+                yield current_batch, start_row, end_row, batch_df
+                
+                current_batch += 1
+            
+            self.logger.info(f"Completed batched extraction - processed {current_batch - start_batch} batches")
+            
+        except FileNotFoundError:
+            self.logger.error(f"Flights file not found: {file_path}")
+            raise
+        except pd.errors.EmptyDataError:
+            self.logger.error(f"Flights file is empty: {file_path}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Error in batched extraction: {e}")
+            raise
+    
+    def get_total_rows(self) -> int:
+        """Get the total number of rows in the flights CSV file.
+        
+        Returns:
+            Total number of data rows (excluding header)
+        """
+        try:
+            file_path = settings.flights_path
+            total_rows = sum(1 for _ in open(file_path)) - 1  # Subtract header row
+            return total_rows
+        except Exception as e:
+            self.logger.error(f"Error counting rows in flights file: {e}")
+            return 0
+    
     def validate_source_files(self) -> Dict[str, bool]:
         """Validate that all required source files exist and are readable.
         

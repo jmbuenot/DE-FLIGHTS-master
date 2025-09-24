@@ -20,7 +20,8 @@ class FactTransformer:
     def transform_flights(
         self, 
         flights_df: pd.DataFrame,
-        dim_lookups: Dict[str, Dict[str, int]]
+        dim_lookups: Dict[str, Dict[str, int]],
+        batch_start_row: int = 1
     ) -> pd.DataFrame:
         """Transform flights data for fact_flights table.
         
@@ -28,6 +29,7 @@ class FactTransformer:
             flights_df: Raw flights DataFrame from CSV
             dim_lookups: Dictionary containing dimension key lookups
                         Format: {'airlines': {'AA': 1, 'DL': 2}, 'airports': {...}, etc.}
+            batch_start_row: Starting row number for this batch (for error logging)
             
         Returns:
             Transformed DataFrame ready for fact_flights table
@@ -38,9 +40,9 @@ class FactTransformer:
         # Create a copy to avoid modifying the original
         df = flights_df.copy()
         
-        # Step 1: Clean and standardize core data
-        self.progress_logger.log_step("Cleaning and standardizing core flight data")
-        df = self._clean_flight_data(df)
+        # Step 1: Row-level data cleaning with detailed logging
+        self.progress_logger.log_step("Row-level data cleaning and validation")
+        df = self._clean_flight_data_with_row_logging(df, batch_start_row)
         
         # Step 2: Create date dimension keys
         self.progress_logger.log_step("Creating date dimension keys")
@@ -73,55 +75,83 @@ class FactTransformer:
         self.progress_logger.complete_process("Flight Fact Transformation", len(df))
         return df
     
-    def _clean_flight_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Clean and standardize the core flight data.
+    def _clean_flight_data_with_row_logging(self, df: pd.DataFrame, batch_start_row: int) -> pd.DataFrame:
+        """Clean flight data with row-level error logging and filtering.
         
         Args:
-            df: Raw flights DataFrame
+            df: Raw flights DataFrame batch
+            batch_start_row: Starting row number for this batch (for error logging)
             
         Returns:
-            Cleaned DataFrame
+            Cleaned DataFrame with problematic rows removed
         """
         initial_count = len(df)
         
-        # Remove records with missing critical data
+        # Define critical columns that must have data
         critical_columns = ['YEAR', 'MONTH', 'DAY', 'AIRLINE', 'ORIGIN_AIRPORT', 'DESTINATION_AIRPORT']
-        df = df.dropna(subset=critical_columns)
         
-        # Standardize airline and airport codes
-        df['AIRLINE'] = df['AIRLINE'].str.strip().str.upper()
-        df['ORIGIN_AIRPORT'] = df['ORIGIN_AIRPORT'].str.strip().str.upper()
-        df['DESTINATION_AIRPORT'] = df['DESTINATION_AIRPORT'].str.strip().str.upper()
+        # Check for missing columns in the batch
+        missing_columns = [col for col in critical_columns if col not in df.columns]
+        if missing_columns:
+            self.logger.error(f"Batch missing entire columns: {missing_columns}")
+            return pd.DataFrame()  # Return empty DataFrame if critical columns missing
+        
+        # Add row indices for logging
+        df = df.reset_index(drop=True)
+        
+        # Identify rows with missing critical data
+        missing_mask = df[critical_columns].isnull().any(axis=1)
+        bad_rows_df = df[missing_mask]
+        
+        # Log specific problematic rows with detailed information
+        if len(bad_rows_df) > 0:
+            for idx, row in bad_rows_df.iterrows():
+                actual_row_number = batch_start_row + idx
+                missing_cols = [col for col in critical_columns if pd.isnull(row[col])]
+                self.logger.warning(f"Skipping row {actual_row_number:,}: missing critical data in columns {missing_cols}")
+        
+        # Filter out rows with missing critical data
+        df_clean = df[~missing_mask].copy()
+        
+        # Standardize airline and airport codes for remaining rows
+        if 'AIRLINE' in df_clean.columns:
+            df_clean['AIRLINE'] = df_clean['AIRLINE'].str.strip().str.upper()
+        if 'ORIGIN_AIRPORT' in df_clean.columns:
+            df_clean['ORIGIN_AIRPORT'] = df_clean['ORIGIN_AIRPORT'].str.strip().str.upper()
+        if 'DESTINATION_AIRPORT' in df_clean.columns:
+            df_clean['DESTINATION_AIRPORT'] = df_clean['DESTINATION_AIRPORT'].str.strip().str.upper()
         
         # Clean flight numbers and tail numbers
-        df['flight_number'] = pd.to_numeric(df['FLIGHT_NUMBER'], errors='coerce').fillna(0).astype(int)
-        df['tail_number'] = df['TAIL_NUMBER'].fillna('').astype(str) if 'TAIL_NUMBER' in df.columns else ''
+        df_clean['flight_number'] = pd.to_numeric(df_clean['FLIGHT_NUMBER'], errors='coerce').fillna(0).astype(int)
+        df_clean['tail_number'] = df_clean['TAIL_NUMBER'].fillna('').astype(str) if 'TAIL_NUMBER' in df_clean.columns else ''
         
         # Handle cancelled and diverted flags
-        df['CANCELLED'] = df['CANCELLED'].fillna(0).astype(int)
-        df['DIVERTED'] = df['DIVERTED'].fillna(0).astype(int)
+        df_clean['CANCELLED'] = df_clean['CANCELLED'].fillna(0).astype(int)
+        df_clean['DIVERTED'] = df_clean['DIVERTED'].fillna(0).astype(int)
         
         # Clean delay columns - set NaN to 0 for non-cancelled flights
         delay_columns = ['DEPARTURE_DELAY', 'ARRIVAL_DELAY']
         for col in delay_columns:
-            df[col] = df[col].fillna(0)
+            if col in df_clean.columns:
+                df_clean[col] = df_clean[col].fillna(0)
         
         # Clean time columns
         time_columns = ['SCHEDULED_TIME', 'ELAPSED_TIME', 'AIR_TIME']
         for col in time_columns:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            if col in df_clean.columns:
+                df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0)
         
         # Clean distance
-        df['DISTANCE'] = pd.to_numeric(df['DISTANCE'], errors='coerce').fillna(0)
+        if 'DISTANCE' in df_clean.columns:
+            df_clean['DISTANCE'] = pd.to_numeric(df_clean['DISTANCE'], errors='coerce').fillna(0)
         
-        cleaned_count = len(df)
+        cleaned_count = len(df_clean)
         dropped_count = initial_count - cleaned_count
         
         if dropped_count > 0:
-            self.logger.warning(f"Dropped {dropped_count:,} flights with missing critical data")
+            self.logger.info(f"Row-level filtering: kept {cleaned_count:,}/{initial_count:,} rows, skipped {dropped_count:,} rows with missing data")
         
-        return df
+        return df_clean
     
     def _add_date_keys(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add date dimension keys to the DataFrame.
@@ -161,13 +191,13 @@ class FactTransformer:
         return df
     
     def _parse_time_to_key(self, time_series: pd.Series) -> pd.Series:
-        """Parse time strings to create time dimension keys.
+        """Parse time strings to create time dimension keys (mapped to closest hour).
         
         Args:
             time_series: Series containing time strings (e.g., '1430' for 2:30 PM)
             
         Returns:
-            Series of time keys in HH:MM format
+            Series of time keys in HH:00 format (rounded to nearest hour)
         """
         def parse_single_time(time_str) -> str:
             if pd.isna(time_str):
@@ -187,7 +217,12 @@ class FactTransformer:
                 if minute >= 60:
                     minute = 0
                 
-                return f"{hour:02d}:{minute:02d}"
+                # Round to nearest hour (30+ minutes rounds up)
+                if minute >= 30:
+                    hour = (hour + 1) % 24
+                
+                # Return hourly slot format to match 24-hour dimension
+                return f"{hour:02d}:00"
                 
             except (ValueError, TypeError):
                 return '00:00'  # Default for unparseable times

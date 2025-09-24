@@ -125,37 +125,27 @@ class MySQLLoader:
         self.logger.info("Creating analytical views")
         return self.execute_sql_file(views_file)
     
-    def truncate_table(self, table_name: str) -> bool:
-        """Truncate a database table.
+    def check_table_has_data(self, table_name: str) -> bool:
+        """Check if a table has any data records.
         
         Args:
-            table_name: Name of the table to truncate
+            table_name: Name of the table to check
             
         Returns:
-            True if truncation successful, False otherwise
+            True if table has data, False if empty or doesn't exist
         """
         try:
-            self.logger.info(f"Truncating table: {table_name}")
-            
             with self.engine.connect() as conn:
-                trans = conn.begin()
-                try:
-                    # Disable foreign key checks temporarily
-                    conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
-                    conn.execute(text(f"TRUNCATE TABLE {table_name}"))
-                    conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
-                    trans.commit()
-                    
-                    self.logger.info(f"Successfully truncated table: {table_name}")
-                    return True
-                    
-                except Exception as e:
-                    trans.rollback()
-                    self.logger.error(f"Error truncating table {table_name}: {e}")
-                    return False
-                    
+                result = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
+                count = result.fetchone()[0]
+                has_data = count > 0
+                
+                self.logger.debug(f"Table {table_name} has {count:,} records")
+                return has_data
+                
         except Exception as e:
-            self.logger.error(f"Unexpected error truncating table {table_name}: {e}")
+            # Table might not exist or other error - assume no data
+            self.logger.debug(f"Could not check table {table_name}: {e}")
             return False
     
     def load_dataframe(
@@ -239,7 +229,7 @@ class MySQLLoader:
             return False
     
     def load_dimensions(self, dimensions: Dict[str, pd.DataFrame]) -> Dict[str, Dict[str, int]]:
-        """Load all dimensional data and return lookup dictionaries.
+        """Load all dimensional data with smart duplicate handling.
         
         Args:
             dimensions: Dictionary of dimension name -> DataFrame
@@ -247,7 +237,7 @@ class MySQLLoader:
         Returns:
             Dictionary of lookup tables for foreign key resolution
         """
-        self.logger.info("Loading dimensional data")
+        self.logger.info("Loading dimensional data with smart duplicate handling")
         self.progress_logger.start_process("Dimension Loading", len(dimensions))
         
         lookup_tables = {}
@@ -273,22 +263,26 @@ class MySQLLoader:
             }
             table_name = table_mapping.get(dim_name, table_name)
             
-            # Truncate table if configured to do so
-            if settings.TRUNCATE_TABLES:
-                self.truncate_table(table_name)
-            
-            # Load the dimension data
-            success = self.load_dataframe(df, table_name)
-            
-            if success:
-                # Create lookup table for foreign key resolution
+            # Smart loading: check if table already has data
+            if self.check_table_has_data(table_name):
+                self.logger.info(f"Table {table_name} already contains data - skipping insert, creating lookup from existing data")
                 lookup_tables[dim_name] = self._create_lookup_table(table_name, dim_name)
-                self.progress_logger.log_step(f"Loaded dimension: {dim_name}", len(df))
+                self.progress_logger.log_step(f"Reused existing dimension: {dim_name}", 0)
             else:
-                self.logger.error(f"Failed to load dimension: {dim_name}")
-                return {}
+                # Table is empty, safe to insert new data
+                self.logger.info(f"Table {table_name} is empty - inserting {len(df):,} records")
+                success = self.load_dataframe(df, table_name)
+                
+                if success:
+                    # Create lookup table for foreign key resolution
+                    lookup_tables[dim_name] = self._create_lookup_table(table_name, dim_name)
+                    self.progress_logger.log_step(f"Loaded new dimension: {dim_name}", len(df))
+                else:
+                    self.logger.error(f"Failed to load dimension: {dim_name}")
+                    return {}
         
-        self.progress_logger.complete_process("Dimension Loading", sum(len(df) for df in dimensions.values()))
+        total_records = sum(len(df) for df in dimensions.values())
+        self.progress_logger.complete_process("Dimension Loading", total_records)
         return lookup_tables
     
     def load_fact_data(self, fact_df: pd.DataFrame) -> bool:
@@ -301,10 +295,6 @@ class MySQLLoader:
             True if loading successful, False otherwise
         """
         table_name = 'fact_flights'
-        
-        # Truncate table if configured to do so
-        if settings.TRUNCATE_TABLES:
-            self.truncate_table(table_name)
         
         return self.load_dataframe(fact_df, table_name)
     

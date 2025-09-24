@@ -2,23 +2,42 @@
 
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from ..config.settings import settings
 
 
+def create_run_log_file() -> str:
+    """Create a unique log file name for this ETL run.
+    
+    Returns:
+        Path to the new log file
+    """
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_filename = f"etl_run_{timestamp}.log"
+    log_path = Path(settings.LOG_DIRECTORY) / log_filename
+    
+    # Create log directory if it doesn't exist
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    return str(log_path)
+
+
 def setup_logging(
     log_level: Optional[str] = None,
     log_file: Optional[str] = None,
-    console_output: bool = True
+    console_output: bool = True,
+    create_run_file: bool = True
 ) -> logging.Logger:
     """Set up logging configuration for the ETL pipeline.
     
     Args:
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        log_file: Path to log file (if None, uses settings.LOG_FILE)
+        log_file: Path to log file (if None, creates a per-run log file)
         console_output: Whether to output logs to console
+        create_run_file: Whether to create a unique log file per run
         
     Returns:
         Configured logger instance
@@ -26,7 +45,11 @@ def setup_logging(
     # Use settings defaults if not provided
     if log_level is None:
         log_level = settings.LOG_LEVEL
-    if log_file is None:
+    
+    # Create per-run log file if requested
+    if log_file is None and create_run_file:
+        log_file = create_run_log_file()
+    elif log_file is None:
         log_file = settings.LOG_FILE
     
     # Convert string level to logging constant
@@ -118,6 +141,88 @@ class ETLProgressLogger:
         message = f"{step_info}: {step_description}"
         if records_processed > 0:
             message += f" ({records_processed:,} records)"
+        
+        self.logger.info(message)
+    
+    def log_batch_start(self, batch_num: int, start_row: int, end_row: int, total_rows: int = 0):
+        """Log the start of batch processing.
+        
+        Args:
+            batch_num: Batch number being processed
+            start_row: Starting row number for this batch
+            end_row: Ending row number for this batch
+            total_rows: Total rows in the dataset (if known)
+        """
+        batch_size = end_row - start_row + 1
+        message = f"Processing batch {batch_num}: rows {start_row:,}-{end_row:,} ({batch_size:,} records)"
+        
+        if total_rows > 0:
+            progress_pct = (end_row / total_rows) * 100
+            message += f" - {progress_pct:.1f}% complete"
+        
+        self.logger.info(message)
+    
+    def log_batch_complete(self, batch_num: int, start_row: int, end_row: int, 
+                          processing_time: float, records_loaded: int = 0, 
+                          total_rows: int = 0):
+        """Log the completion of batch processing.
+        
+        Args:
+            batch_num: Completed batch number
+            start_row: Starting row number for this batch
+            end_row: Ending row number for this batch
+            processing_time: Time taken to process this batch (seconds)
+            records_loaded: Number of records successfully loaded
+            total_rows: Total rows in dataset (if known)
+        """
+        batch_size = end_row - start_row + 1
+        records_per_second = batch_size / processing_time if processing_time > 0 else 0
+        
+        message = (
+            f"Batch {batch_num} completed: rows {start_row:,}-{end_row:,} "
+            f"({batch_size:,} records processed in {processing_time:.2f}s - "
+            f"{records_per_second:.0f} records/sec)"
+        )
+        
+        if records_loaded > 0 and records_loaded != batch_size:
+            message += f" - {records_loaded:,} records loaded"
+        
+        if total_rows > 0:
+            progress_pct = (end_row / total_rows) * 100
+            message += f" - {progress_pct:.1f}% complete"
+        
+        self.logger.info(message)
+    
+    def log_batch_error(self, batch_num: int, start_row: int, end_row: int, 
+                       error_description: str, exception: Optional[Exception] = None):
+        """Log a batch processing error.
+        
+        Args:
+            batch_num: Batch number that failed
+            start_row: Starting row number for this batch
+            end_row: Ending row number for this batch
+            error_description: Description of the error
+            exception: Exception object (if available)
+        """
+        batch_size = end_row - start_row + 1
+        message = f"Batch {batch_num} FAILED: rows {start_row:,}-{end_row:,} ({batch_size:,} records) - {error_description}"
+        
+        if exception:
+            message += f" - {str(exception)}"
+        
+        self.logger.error(message)
+    
+    def log_resume_info(self, resume_batch: int, resume_row: int, reason: str = ""):
+        """Log resumption information.
+        
+        Args:
+            resume_batch: Batch number being resumed from
+            resume_row: Row number being resumed from
+            reason: Reason for resumption (e.g., "batch size changed")
+        """
+        message = f"Resuming ETL processing from batch {resume_batch}, row {resume_row:,}"
+        if reason:
+            message += f" ({reason})"
         
         self.logger.info(message)
     

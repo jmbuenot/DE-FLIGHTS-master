@@ -30,6 +30,7 @@ class Settings:
         self.BATCH_SIZE = int(os.getenv('BATCH_SIZE', '100000'))
         self.LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
         self.LOG_FILE = os.getenv('LOG_FILE', 'logs/etl_pipeline.log')
+        self.LOG_DIRECTORY = Path(os.getenv('LOG_DIRECTORY', 'logs'))
         
         # Processing Options
         self.SKIP_DATA_VALIDATION = os.getenv('SKIP_DATA_VALIDATION', 'false').lower() == 'true'
